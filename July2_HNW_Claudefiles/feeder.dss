@@ -1,0 +1,13 @@
+! ===== Feeder feeder_SUB  (snapshot 260316_std) =====
+! --- source (slack) ---
+New Circuit.SUB bus1=SUB basekv=24.94 phases=3 pu=1.05
+! --- LineCodes (per-mile sequence impedance; (type,voltage) buckets) ---
+New LineCode.OH_PRIMARY_25 nphases=3 R1=0.35 X1=0.6 R0=1.0 X0=2.0 units=mi
+! --- transformers ---
+New Transformer.T1 phases=3 windings=2 buses=[N2.1.2.3, T1.1.2.3] kvs=[24.94, 0.48] kvas=[501.0, 501.0] conns=[wye, wye] xhl=5.5 %loadloss=0.8
+! --- lines ---
+New Line.N1 bus1=SUB.1.2.3 bus2=N1.1.2.3 phases=3 linecode=OH_PRIMARY_25 length=2000.0 units=ft
+New Line.N2 bus1=N1.1.2.3 bus2=N2.1.2.3 phases=3 linecode=OH_PRIMARY_25 length=1500.0 units=ft
+! --- solve setup ---
+Set voltagebases=[24.94, 0.48]
+CalcVoltageBases
