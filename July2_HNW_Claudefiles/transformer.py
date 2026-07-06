@@ -7,9 +7,9 @@ Two silver sources:
   * TOPOLOGY  from a `network_edges` row -> HV bus (source_node_id),
               LV bus (target_node_id == element_name).
   * ATTRIBUTES from `network_transformers` (rated voltages, per-phase kVA) and
-    `semantic.grid_location` (TRANSFORMER_PHASE, USAGE_POINT_PHASE).
+    silver.network_transformers (has_phase_a/b/c, kVA, voltages).
 
-PHASING — two distinct concepts (from semantic.grid_location):
+PHASING — from network_transformers.has_phase_a/b/c (device phasing):
   * TRANSFORMER_PHASE = the LINE phasing at the node (e.g. 'ABC'). Context only.
   * USAGE_POINT_PHASE = the phases the transformer actually CONNECTS to
                         (e.g. 'A', 'AB', 'ABC'). THIS drives the device model.
@@ -92,48 +92,56 @@ class Transformer(WindMilElement):
         kva_b = float(attr.get("capacity_kva_b") or 0.0)
         kva_c = float(attr.get("capacity_kva_c") or 0.0)
 
-        # phase strings from semantic.grid_location (e.g. 'ABC', 'AB', 'A')
-        tx_phase = (attr.get("TRANSFORMER_PHASE") or "").strip().upper()
-        up_phase = (attr.get("USAGE_POINT_PHASE") or "").strip().upper()
+        # PHASING now comes from network_transformers.has_phase_a/b/c (booleans).
+        # (Optional legacy string TRANSFORMER_PHASE/USAGE_POINT_PHASE still honored
+        #  if present, e.g. synthetic tests.)
+        def _flag(v):
+            if v is None:
+                return None
+            return str(v).strip().lower() in ("1", "true", "t", "yes", "y")
+
+        ha = _flag(attr.get("has_phase_a"))
+        hb = _flag(attr.get("has_phase_b"))
+        hc = _flag(attr.get("has_phase_c"))
+        up_str = (attr.get("USAGE_POINT_PHASE") or "").strip().upper()
+        tx_str = (attr.get("TRANSFORMER_PHASE") or "").strip().upper()
+
+        # resolve device phasing: prefer booleans; else the string; else kVA presence
+        if ha is not None or hb is not None or hc is not None:
+            has_a, has_b, has_c = bool(ha), bool(hb), bool(hc)
+        elif up_str:
+            has_a, has_b, has_c = ("A" in up_str), ("B" in up_str), ("C" in up_str)
+        else:
+            has_a, has_b, has_c = (kva_a > 0), (kva_b > 0), (kva_c > 0)
+
+        up_phase = "".join(p for p, h in zip("ABC", (has_a, has_b, has_c)) if h)
 
         obj = cls(
-            # identity + connectivity FROM THE EDGE (HV=source, LV=target)
             name=edge.get("target_node_id") or edge.get("element_name"),
             parent=edge.get("source_node_id"),
             snapshot=snapshot,
             valid_from=edge.get("VALID_FROM"),
             valid_to=edge.get("VALID_TO"),
-            # attributes
             hv_raw=float(attr.get("rated_voltage_srcside") or 0.0),
             lv_raw=float(attr.get("rated_voltage_loadside") or 0.0),
             kva_a=kva_a, kva_b=kva_b, kva_c=kva_c,
-            transformer_phase=tx_phase,
+            transformer_phase=tx_str,
             usage_point_phase=up_phase,
         )
         obj.kva = kva_a + kva_b + kva_c
 
-        # DEVICE phasing = USAGE_POINT_PHASE (the phases the transformer connects to).
-        # This drives nphases, bus suffix, and the kv-form (L-N vs L-L) decision.
-        obj.phase_code = up_phase          # base.bus()/nphases use the string decoder
-        obj.has_a = "A" in up_phase
-        obj.has_b = "B" in up_phase
-        obj.has_c = "C" in up_phase
+        # DEVICE phasing drives nphases, bus suffix, and the kv-form decision.
+        obj.phase_code = up_phase
+        obj.has_a, obj.has_b, obj.has_c = has_a, has_b, has_c
 
-        # validation 1: usage-point phases must be a subset of the line phases
-        if tx_phase and up_phase and not set(up_phase) <= set(tx_phase):
-            obj.add_flag(
-                f"USAGE_POINT_PHASE '{up_phase}' not a subset of "
-                f"TRANSFORMER_PHASE '{tx_phase}'"
-            )
-        # validation 2: usage-point phases should match where the kVA is
+        # validation: device phases should match where the kVA is
         kva_phases = "".join(p for p, k in zip("ABC", (kva_a, kva_b, kva_c)) if k > 0)
         if up_phase and kva_phases and set(up_phase) != set(kva_phases):
             obj.add_flag(
-                f"USAGE_POINT_PHASE '{up_phase}' != kVA-present phases "
-                f"'{kva_phases}'"
+                f"phasing '{up_phase}' != kVA-present phases '{kva_phases}'"
             )
         if not up_phase:
-            obj.add_flag("USAGE_POINT_PHASE missing; phasing undetermined")
+            obj.add_flag("transformer phasing undetermined (no has_phase_*, string, or kVA)")
 
         obj.add_assumption("transformer impedance standard-substituted by kVA (no %Z in data)")
         obj.add_assumption("winding connection assumed wye-wye (winding_code decode pending)")
