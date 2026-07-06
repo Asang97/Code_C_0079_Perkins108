@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from .elements.source import Source
 from .elements.line import Line
 from .elements.transformer import Transformer
+from .elements.consumer import Consumer
 from .libraries.linecode import LineCodeLibrary
 
 
@@ -34,10 +35,12 @@ from .libraries.linecode import LineCodeLibrary
 class Feeder:
     name: str                         # feeder identifier (e.g. the head recloser)
     snapshot: str
+    scenario: str = "coincident"      # load scenario emitted (coincident/max/average)
     source: Source | None = None
     lines: list[Line] = field(default_factory=list)
     transformers: list[Transformer] = field(default_factory=list)
-    # (loads, capacitors, ... added as those elements are built)
+    consumers: list[Consumer] = field(default_factory=list)
+    # (capacitors, regulators, switches ... added as those elements are built)
     linecodes: LineCodeLibrary = field(default_factory=LineCodeLibrary)
     resolved: bool = False
 
@@ -53,8 +56,10 @@ class Feeder:
         line_rows: list[dict],             # [{"edge":..., "attr":...}, ...]
         transformer_rows: list[dict],
         region_voltage: dict[str, float],  # {node_name: base_kv_LL}
+        consumer_rows: list[dict] | None = None,
+        scenario: str = "coincident",
     ) -> "Feeder":
-        f = cls(name=name, snapshot=snapshot)
+        f = cls(name=name, snapshot=snapshot, scenario=scenario)
 
         # source (the slack)
         f.source = Source.from_row(source_rows["edge"], source_rows["attr"], snapshot)
@@ -72,6 +77,25 @@ class Feeder:
             f.transformers.append(
                 Transformer.from_row(r["edge"], r["attr"], snapshot)
             )
+
+        # consumers (loads) — need their serving L-N voltage. Resolve the
+        # transformers first so their secondary kv is known, then map each
+        # consumer to its upstream transformer's secondary.
+        for xf in f.transformers:
+            xf.resolve(f)                          # ensures lv_kv_ln is computed
+        sec_ln_by_node = {xf.name: xf.lv_kv_ln for xf in f.transformers}
+
+        for r in (consumer_rows or []):
+            attr = dict(r["attr"])
+            # serving voltage: the consumer's parent is (typically) the
+            # transformer secondary node; look up that transformer's L-N kv.
+            parent = r["edge"].get("source_node_id")
+            if attr.get("serving_kv_ln") in (None, 0, 0.0):
+                sv = sec_ln_by_node.get(parent)
+                if sv:
+                    attr["serving_kv_ln"] = sv
+            c = Consumer.from_row(r["edge"], attr, snapshot, scenario=scenario)
+            f.consumers.append(c)
         return f
 
     # ---------------------------------------------------------------- #
@@ -118,7 +142,10 @@ class Feeder:
             parts.append("! --- lines ---")
             parts.extend(ln.to_dss() for ln in self.lines)
 
-        # 5) (loads go here once built)
+        # 5) loads (consumers) — each emits per-phase single-phase Loads
+        if self.consumers:
+            parts.append(f"! --- loads (scenario: {self.scenario}) ---")
+            parts.extend(c.to_dss() for c in self.consumers)
 
         # 6) voltage bases + calc
         vbases = self._voltage_bases()
@@ -149,7 +176,8 @@ class Feeder:
     # ---------------------------------------------------------------- #
     def report(self) -> dict:
         assumptions, flags = [], []
-        elems = ([self.source] if self.source else []) + self.lines + self.transformers
+        elems = (([self.source] if self.source else [])
+                 + self.lines + self.transformers + self.consumers)
         for e in elems:
             for a in e.assumptions:
                 assumptions.append(f"[{e.dss_type} {e.name}] {a}")
@@ -163,9 +191,12 @@ class Feeder:
         return {
             "feeder": self.name,
             "snapshot": self.snapshot,
+            "scenario": self.scenario,
             "n_lines": len(self.lines),
             "n_transformers": len(self.transformers),
+            "n_consumers": len(self.consumers),
             "n_linecodes": len(self.linecodes),
+            "total_load_kw": round(sum(c.total_kw() for c in self.consumers), 2),
             "assumptions": assumptions,
             "flags": flags,
         }
