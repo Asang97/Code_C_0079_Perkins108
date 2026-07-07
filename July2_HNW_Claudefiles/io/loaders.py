@@ -1,23 +1,14 @@
 """
 io/loaders.py — the functions FastAPI (and the Feeder) call.
 
-Public API (parameterized by snapshot + feeder_id, read-only, stateless,
-returns plain data):
-    list_snapshots()                      -> [snapshot, ...]
-    list_feeders(snapshot)                -> [{feeder_id, n_elements}, ...]
-    load_feeder_data(snapshot, feeder_id) -> dict ready for Feeder.build()
+Point-in-time via :as_of (silver uses VALID_FROM/VALID_TO validity intervals,
+not snapshot folders). Catalog (top folder) is injected in queries.py from
+MILSOFT_CATALOG. Bronze/silver only.
 
-load_feeder_data returns:
-    {
-      "source_rows":      {"edge":{...}, "attr":{...}},
-      "line_rows":        [{"edge":{...}, "attr":{...}}, ...],
-      "transformer_rows": [{"edge":{...}, "attr":{...}}, ...],
-      "consumer_rows":    [{"edge":{...}, "attr":{...}}, ...],   # metered loads
-      "region_voltage":   {node: base_kv_LL, ...},
-    }
-
-Bronze/silver only. Consumer phasing comes from network_consumers has_phase_*;
-consumer loads come from the meter join (meter_loads.build_all_consumer_attrs).
+Public API:
+    list_as_of_dates()                     -> [date, ...]   (was list_snapshots)
+    list_feeders(as_of)                    -> [{feeder_id, n_elements}, ...]
+    load_feeder_data(as_of, feeder_id)     -> dict ready for Feeder.build()
 """
 from __future__ import annotations
 from math import sqrt
@@ -32,29 +23,32 @@ class FeederNotFound(Exception):
 
 
 # ---------------------------------------------------------------- #
-def list_snapshots() -> list[str]:
-    return [r["snapshot"] for r in query(Q.LIST_SNAPSHOTS)]
+def list_as_of_dates() -> list:
+    """Distinct validity dates available (silver VALID_FROM values)."""
+    return [r["as_of"] for r in query(Q.LIST_SNAPSHOTS)]
 
 
-def list_feeders(snapshot: str) -> list[dict]:
-    return query(Q.LIST_FEEDERS, {"snapshot": snapshot})
+# backward-compatible alias
+list_snapshots = list_as_of_dates
+
+
+def list_feeders(as_of) -> list[dict]:
+    return query(Q.LIST_FEEDERS, {"as_of": as_of})
 
 
 # ---------------------------------------------------------------- #
-def load_feeder_data(snapshot: str, feeder_id: str,
-                     period_hours: float | None = None) -> dict:
-    params = {"snapshot": snapshot, "feeder_id": feeder_id}
+def load_feeder_data(as_of, feeder_id: str, period_hours: float | None = None) -> dict:
+    params = {"as_of": as_of, "feeder_id": feeder_id}
 
     elements = query(Q.FEEDER_ELEMENTS, params)
     if not elements:
-        raise FeederNotFound(f"no elements for feeder {feeder_id} in {snapshot}")
+        raise FeederNotFound(f"no elements for feeder {feeder_id} at {as_of}")
 
     lines_attr = {r["node_id"]: r for r in query(Q.FEEDER_LINES, params)}
     xfmr_attr = {r["node_id"]: r for r in query(Q.FEEDER_TRANSFORMERS, params)}
     source_rows_raw = query(Q.FEEDER_SOURCE, params)
 
-    # meter loads for this feeder's consumers (keyed by node_id)
-    meter_rows = query(Q.METER_LOADS, {"snapshot": snapshot})
+    meter_rows = query(Q.METER_LOADS, {"as_of": as_of})
     consumer_attrs = build_all_consumer_attrs(meter_rows, period_hours=period_hours)
 
     elem_by_name = {e["element_name"]: e for e in elements}
@@ -67,10 +61,8 @@ def load_feeder_data(snapshot: str, feeder_id: str,
         elif name in lines_attr:
             line_rows.append({"edge": edge, "attr": dict(lines_attr[name])})
         elif name in consumer_attrs:
-            # metered consumer -> attach its per-phase load values
             consumer_rows.append({"edge": edge, "attr": consumer_attrs[name]})
 
-    # source
     if not source_rows_raw:
         raise FeederNotFound(f"no substation for feeder {feeder_id}")
     src_attr = source_rows_raw[0]
@@ -107,8 +99,7 @@ def _edge_from_path_row(e: dict) -> dict:
 
 
 def _derive_region_voltage(elem_by_name, xfmr_attr, src_attr) -> dict:
-    """Stopgap: primary L-L (from source) on every non-transformer node.
-    Replace with the voltage-region SQL for multi-voltage feeders."""
+    """Stopgap: primary L-L (from source) on every non-transformer node."""
     src_ln = float(src_attr.get("nominal_voltage") or 0.0)
     src_ll = round(src_ln * sqrt(3.0), 2) if src_ln else None
     return {name: src_ll for name in elem_by_name if name not in xfmr_attr}

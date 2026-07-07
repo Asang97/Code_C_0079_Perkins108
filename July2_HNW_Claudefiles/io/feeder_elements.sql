@@ -1,6 +1,5 @@
--- feeder_elements.sql — distinct elements belonging to one feeder
--- (every element whose path passes through the feeder-head recloser)
--- PARAMETERS: :snapshot, :feeder_id
+-- feeder_elements.sql — distinct elements of one feeder, valid at :as_of.
+-- PARAMETERS: :as_of, :feeder_id
 SELECT DISTINCT
     p.element_name, p.current_node_id, p.pre_node_id,
     p.edge_type, p.node_type,
@@ -8,7 +7,7 @@ SELECT DISTINCT
     p.depth,
     p.is_transformer, p.is_substation, p.is_feeder,
     p.is_regulator, p.is_recloser, p.is_fuse
-FROM silver.usage_point_paths p
-WHERE p._snapshot_folder = :snapshot
-  AND p.path LIKE CONCAT('%', :feeder_id, '%')
+FROM {catalog}.silver.usage_point_paths p
+WHERE p.path LIKE CONCAT('%', :feeder_id, '%')
+  AND p.VALID_FROM <= :as_of AND (p.VALID_TO > :as_of OR p.VALID_TO IS NULL)
 ;
