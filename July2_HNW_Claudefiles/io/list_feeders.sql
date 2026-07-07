@@ -1,14 +1,11 @@
--- list_feeders.sql — feeder-head reclosers (is_feeder) valid at :as_of.
--- PARAMETERS: :as_of
-SELECT
-    p.element_name AS feeder_id,
-    COUNT(DISTINCT p2.element_name) AS n_elements
+-- list_feeders.sql — the feeders (reclosers) directly below one substation.
+-- In the reverse tree, PRE_NODE_ID is the CHILD (one step toward loads). So the
+-- children of the substation node are its feeders. Cheap: filter, no self-join.
+-- PARAMETERS: :as_of, :substation_id
+SELECT DISTINCT p.pre_node_id AS feeder_id
 FROM {catalog}.silver.usage_point_paths p
-LEFT JOIN {catalog}.silver.usage_point_paths p2
-    ON p2.path LIKE CONCAT('%', p.element_name, '%')
-   AND p2.VALID_FROM <= :as_of AND (p2.VALID_TO > :as_of OR p2.VALID_TO IS NULL)
-WHERE p.is_feeder = true
+WHERE p.current_node_id = :substation_id
+  AND p.pre_node_id IS NOT NULL
   AND p.VALID_FROM <= :as_of AND (p.VALID_TO > :as_of OR p.VALID_TO IS NULL)
-GROUP BY p.element_name
-ORDER BY p.element_name
+ORDER BY feeder_id
 ;

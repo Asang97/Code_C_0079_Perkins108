@@ -59,6 +59,7 @@ def _load(name: str) -> str:
 
 
 LIST_SNAPSHOTS      = _load("list_snapshots.sql")
+LIST_SUBSTATIONS    = _load("list_substations.sql")
 LIST_FEEDERS        = _load("list_feeders.sql")
 FEEDER_ELEMENTS     = _load("feeder_elements.sql")
 FEEDER_LINES        = _load("feeder_lines.sql")
