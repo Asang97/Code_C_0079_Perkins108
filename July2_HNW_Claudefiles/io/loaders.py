@@ -142,7 +142,7 @@ def _query_in(sql_with_nodes: str, as_of, node_ids: list[str]) -> list[dict]:
 def _edge_from_path_row(e: dict) -> dict:
     return {
         "target_node_id": e.get("element_name") or e.get("current_node_id"),
-        "source_node_id": e.get("pre_node_id"),
+        "source_node_id": e.get("prev_node_id"),
         "element_name": e.get("element_name"),
         "edge_type": e.get("edge_type"),
         "has_phase_a": e.get("has_phase_a"),

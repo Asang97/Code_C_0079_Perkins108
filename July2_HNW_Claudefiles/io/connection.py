@@ -72,9 +72,13 @@ def query(sql_text: str, params: dict | None = None) -> list[dict]:
 
     Parameterized via named markers (:name) — NEVER string-format user input
     into SQL. This is the single choke point all loaders go through.
+
+    Column names are LOWERCASED in the returned dicts, so the Python layer can
+    use consistent lowercase keys regardless of the database's column casing
+    (e.g. UPPERCASE in silver.usage_point_paths).
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(sql_text, params or {})
-            cols = [d[0] for d in cur.description]
+            cols = [d[0].lower() for d in cur.description]
             return [dict(zip(cols, row)) for row in cur.fetchall()]
